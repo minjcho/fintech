@@ -9,7 +9,7 @@ import logging
 import json
 from typing import Dict, Any, Optional, List
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -228,13 +228,58 @@ class ProphetService:
             logger.error(f"Error in Prophet category prediction: {e}")
             raise
     
+    def _predict_single_category(self, category: str, csv_data: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Predict spending for a single category (designed for parallel execution)
+
+        Args:
+            category: Category name to predict
+            csv_data: DataFrame with transaction data
+
+        Returns:
+            Dictionary with prediction results for the category
+        """
+        try:
+            # Prepare data for this category
+            prophet_data = self.prepare_category_data(csv_data, category)
+
+            if len(prophet_data) < 2:
+                logger.warning(f"Not enough data for category '{category}', skipping")
+                return None
+
+            # Train model for this category
+            model = self.train_prophet_model(prophet_data, category)
+
+            if model is None:
+                return None
+
+            # Make predictions
+            forecast = self.make_predictions(model)
+
+            # Calculate monthly aggregates
+            results = self.calculate_monthly_category_aggregates(
+                forecast,
+                prophet_data,
+                category
+            )
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error predicting for category '{category}': {e}")
+            return {
+                'category': category,
+                'error': str(e),
+                'current_month': {'predicted': 0}
+            }
+
     def _predict_by_category_sync(self, csv_data: pd.DataFrame) -> Dict[str, Any]:
         """
-        Synchronous method for Prophet prediction by category (runs in thread pool)
-        
+        Synchronous method for Prophet prediction by category with parallel processing
+
         Args:
             csv_data: DataFrame with transaction data
-            
+
         Returns:
             Dictionary with category-wise predictions
         """
@@ -242,59 +287,49 @@ class ProphetService:
         if 'category' not in csv_data.columns:
             logger.error("No 'category' column found in data")
             return {'error': 'No category column in data'}
-        
+
         categories = csv_data['category'].unique()
         logger.info(f"Found {len(categories)} categories: {categories[:5]}...")
-        
+
         # Store predictions for each category
         category_predictions = {}
         total_current_predicted = 0
-        
-        # Process each category
-        for category in categories:
-            try:
-                # Prepare data for this category
-                prophet_data = self.prepare_category_data(csv_data, category)
-                
-                if len(prophet_data) < 2:
-                    logger.warning(f"Not enough data for category '{category}', skipping")
-                    continue
-                
-                # Train model for this category
-                model = self.train_prophet_model(prophet_data, category)
-                
-                if model is None:
-                    continue
-                
-                # Make predictions
-                forecast = self.make_predictions(model)
-                
-                # Calculate monthly aggregates
-                results = self.calculate_monthly_category_aggregates(
-                    forecast, 
-                    prophet_data,
-                    category
-                )
-                
-                category_predictions[category] = results
-                
-                # Add to totals
-                total_current_predicted += results['current_month']['predicted']
-                
-            except Exception as e:
-                logger.error(f"Error predicting for category '{category}': {e}")
-                category_predictions[category] = {
-                    'category': category,
-                    'error': str(e),
-                    'current_month': {'predicted': 0}
-                }
-        
+
+        # Process categories in parallel
+        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="category-worker") as category_executor:
+            # Submit all category prediction tasks
+            future_to_category = {
+                category_executor.submit(self._predict_single_category, category, csv_data): category
+                for category in categories
+            }
+
+            # Collect results as they complete
+            for future in as_completed(future_to_category):
+                category = future_to_category[future]
+                try:
+                    result = future.result()
+
+                    if result is not None:
+                        category_predictions[category] = result
+                        # Add to totals
+                        total_current_predicted += result['current_month']['predicted']
+                    else:
+                        logger.warning(f"No prediction result for category '{category}'")
+
+                except Exception as e:
+                    logger.error(f"Exception occurred for category '{category}': {e}")
+                    category_predictions[category] = {
+                        'category': category,
+                        'error': str(e),
+                        'current_month': {'predicted': 0}
+                    }
+
         # Set trend status
         trend = "analyzed"
-        
+
         # Get current date info
         current_date = datetime.now()
-        
+
         return {
             'prediction_id': str(uuid.uuid4()),
             'created_at': datetime.utcnow().isoformat(),
