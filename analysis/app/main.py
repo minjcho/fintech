@@ -5,7 +5,8 @@ import logging
 
 from app.api.router import api_router
 from app.core.config import settings
-from app.models.database import init_db
+from app.models.database import init_db, engine as async_engine
+from app.db.database import engine as sync_engine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -13,12 +14,16 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize database on startup"""
+    """Initialize database on startup and cleanup on shutdown"""
     logger.info("Initializing database...")
     await init_db()
     logger.info("Database initialized")
     yield
+    # Graceful shutdown: close database connections (both async and sync engines)
     logger.info("Shutting down...")
+    await async_engine.dispose()
+    sync_engine.dispose()
+    logger.info("Database connections closed")
 
 
 app = FastAPI(
