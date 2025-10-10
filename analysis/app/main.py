@@ -5,7 +5,8 @@ import logging
 
 from app.api.router import api_router
 from app.core.config import settings
-from app.models.database import init_db, engine
+from app.models.database import init_db, engine as async_engine
+from app.db.database import engine as sync_engine
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,9 +19,10 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database initialized")
     yield
-    # Graceful shutdown: close database connections
+    # Graceful shutdown: close database connections (both async and sync engines)
     logger.info("Shutting down...")
-    await engine.dispose()
+    await async_engine.dispose()
+    sync_engine.dispose()
     logger.info("Database connections closed")
 
 

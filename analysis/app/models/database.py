@@ -100,16 +100,28 @@ class LeakAnalysis(Base):
 
 async def init_db():
     """
-    Initialize database tables (worker-safe)
+    Initialize database tables (worker-safe with exception handling)
 
     This function is called in each worker's lifespan startup.
     SQLAlchemy's create_all() uses CREATE TABLE IF NOT EXISTS,
     which is safe for concurrent execution across multiple workers.
+
+    Exception handling added to gracefully handle race conditions
+    when multiple workers attempt to create tables simultaneously.
     """
     from app.db.models import Base as DBBase  # Import from db/models.py
-    async with engine.begin() as conn:
-        # create_all is idempotent and uses CREATE TABLE IF NOT EXISTS
-        await conn.run_sync(DBBase.metadata.create_all)
+    try:
+        async with engine.begin() as conn:
+            # create_all is idempotent and uses CREATE TABLE IF NOT EXISTS
+            await conn.run_sync(DBBase.metadata.create_all)
+    except Exception as e:
+        # Log but don't fail - tables may already exist from another worker
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Database initialization encountered an issue (may be expected with multiple workers): {e}")
+        # Re-raise only if it's not a "table already exists" type error
+        if "already exists" not in str(e).lower():
+            raise
 
 
 async def get_db():
