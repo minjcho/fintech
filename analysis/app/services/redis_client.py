@@ -4,6 +4,7 @@ Redis client for managing analysis job status
 import redis
 import json
 import logging
+import uuid
 from typing import Optional, Dict, Any
 import os
 
@@ -92,7 +93,7 @@ class RedisClient:
         """Get file metadata from csv-manager's Redis namespace"""
         if not self.client:
             return None
-        
+
         try:
             # Try to get metadata by ID
             meta_key = f"csv:metadata:id:{file_id}"
@@ -103,3 +104,82 @@ class RedisClient:
         except Exception as e:
             logger.error(f"Failed to get file metadata: {e}")
             return None
+
+    def acquire_analysis_lock(self, file_id: str, timeout: int = 120) -> Optional[str]:
+        """
+        Acquire analysis lock atomically using Redis SET NX with unique token
+
+        Args:
+            file_id: File ID to lock
+            timeout: Lock expiration time in seconds (default: 120)
+
+        Returns:
+            Lock token (UUID) if acquired, None if already locked
+        """
+        if not self.client:
+            logger.error("Redis not available, cannot acquire lock")
+            return None  # Fail fast - Redis is required for distributed locking
+
+        try:
+            lock_key = f"lock:analysis:{file_id}"
+            lock_token = str(uuid.uuid4())
+
+            # SET NX EX - Atomic operation with unique token
+            # NX: Only set if key doesn't exist
+            # EX: Set expiration time (prevents deadlock)
+            acquired = self.client.set(
+                lock_key,
+                lock_token,
+                nx=True,  # Not eXists
+                ex=timeout  # EXpire in seconds
+            )
+
+            if acquired:
+                logger.info(f"Acquired analysis lock for {file_id} with token {lock_token[:8]}... (expires in {timeout}s)")
+                return lock_token
+            else:
+                logger.warning(f"Failed to acquire lock for {file_id} - already locked")
+                return None
+        except Exception as e:
+            logger.error(f"Failed to acquire lock for {file_id}: {e}")
+            return None
+
+    def release_analysis_lock(self, file_id: str, lock_token: Optional[str] = None):
+        """
+        Release analysis lock with ownership verification
+
+        Args:
+            file_id: File ID to unlock
+            lock_token: Token to verify lock ownership (optional for backward compatibility)
+        """
+        if not self.client:
+            return
+
+        try:
+            lock_key = f"lock:analysis:{file_id}"
+
+            if lock_token:
+                # Use Lua script for atomic ownership verification and deletion
+                # This prevents Request A from deleting Request B's lock
+                lua_script = """
+                if redis.call("GET", KEYS[1]) == ARGV[1] then
+                    return redis.call("DEL", KEYS[1])
+                else
+                    return 0
+                end
+                """
+                deleted = self.client.eval(lua_script, 1, lock_key, lock_token)
+
+                if deleted:
+                    logger.info(f"Released analysis lock for {file_id} with token {lock_token[:8]}...")
+                else:
+                    logger.debug(f"Lock for {file_id} not owned by this token (may have expired or been taken by another request)")
+            else:
+                # Fallback for backward compatibility (no token provided)
+                deleted = self.client.delete(lock_key)
+                if deleted:
+                    logger.info(f"Released analysis lock for {file_id} (no token verification)")
+                else:
+                    logger.debug(f"No lock found to release for {file_id} (may have expired)")
+        except Exception as e:
+            logger.error(f"Failed to release lock for {file_id}: {e}")
