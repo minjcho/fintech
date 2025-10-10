@@ -92,7 +92,7 @@ class RedisClient:
         """Get file metadata from csv-manager's Redis namespace"""
         if not self.client:
             return None
-        
+
         try:
             # Try to get metadata by ID
             meta_key = f"csv:metadata:id:{file_id}"
@@ -103,3 +103,60 @@ class RedisClient:
         except Exception as e:
             logger.error(f"Failed to get file metadata: {e}")
             return None
+
+    def acquire_analysis_lock(self, file_id: str, timeout: int = 120) -> bool:
+        """
+        Acquire analysis lock atomically using Redis SET NX
+
+        Args:
+            file_id: File ID to lock
+            timeout: Lock expiration time in seconds (default: 120)
+
+        Returns:
+            True if lock acquired, False if already locked
+        """
+        if not self.client:
+            logger.warning("Redis not available, skipping lock acquisition")
+            return True  # Allow execution without Redis
+
+        try:
+            lock_key = f"lock:analysis:{file_id}"
+            # SET NX EX - Atomic operation
+            # NX: Only set if key doesn't exist
+            # EX: Set expiration time (prevents deadlock)
+            acquired = self.client.set(
+                lock_key,
+                "analyzing",
+                nx=True,  # Not eXists
+                ex=timeout  # EXpire in seconds
+            )
+
+            if acquired:
+                logger.info(f"Acquired analysis lock for {file_id} (expires in {timeout}s)")
+            else:
+                logger.warning(f"Failed to acquire lock for {file_id} - already locked")
+
+            return bool(acquired)
+        except Exception as e:
+            logger.error(f"Failed to acquire lock for {file_id}: {e}")
+            return False
+
+    def release_analysis_lock(self, file_id: str):
+        """
+        Release analysis lock
+
+        Args:
+            file_id: File ID to unlock
+        """
+        if not self.client:
+            return
+
+        try:
+            lock_key = f"lock:analysis:{file_id}"
+            deleted = self.client.delete(lock_key)
+            if deleted:
+                logger.info(f"Released analysis lock for {file_id}")
+            else:
+                logger.warning(f"No lock found to release for {file_id}")
+        except Exception as e:
+            logger.error(f"Failed to release lock for {file_id}: {e}")

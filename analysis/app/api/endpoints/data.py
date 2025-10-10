@@ -104,14 +104,14 @@ async def run_baseline_analysis(
             db.commit()
             logger.info(f"Baseline predictions saved for {file_id}")
 
-        # Update Redis status to none after baseline completion
-        redis_client.set_csv_status(file_id, "none")
-        logger.info(f"All analysis completed for {file_id}, status set to none")
+        # Release analysis lock after baseline completion
+        redis_client.release_analysis_lock(file_id)
+        logger.info(f"All analysis completed for {file_id}, lock released")
 
     except Exception as e:
         logger.error(f"Baseline analysis failed for {file_id}: {str(e)}")
-        # Update Redis status to none even on failure
-        redis_client.set_csv_status(file_id, "none")
+        # Release analysis lock even on failure
+        redis_client.release_analysis_lock(file_id)
     finally:
         if db:
             db.close()
@@ -131,8 +131,8 @@ async def run_prophet_analysis(
         if db is None:
             db = next(get_db())
 
-        # Update status to analyzing
-        redis_client.set_csv_status(file_id, "analyzing")
+        # Lock already acquired in calculate_monthly_leak
+        # No need to set status here
 
         # Get file metadata from Redis
         file_metadata = redis_client.get_file_metadata(file_id)
@@ -365,8 +365,8 @@ async def run_prophet_analysis(
         # Store error metadata for debugging
         redis_client.set_analysis_metadata(file_id, {"error": str(e)})
 
-        # Update Redis status to none on failure (since baseline won't run)
-        redis_client.set_csv_status(file_id, "none")
+        # Release analysis lock on failure (since baseline won't run)
+        redis_client.release_analysis_lock(file_id)
     finally:
         # Always close the db connection
         if db:
@@ -443,9 +443,8 @@ async def calculate_monthly_leak(
             detail=f"File with ID '{file_id}' not found"
         )
 
-    # Check if analysis is already running
-    current_status = redis_client.get_csv_status(file_id)
-    if current_status == 'analyzing':
+    # Acquire analysis lock atomically to prevent concurrent analysis
+    if not redis_client.acquire_analysis_lock(file_id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Analysis is already in progress for this file"
