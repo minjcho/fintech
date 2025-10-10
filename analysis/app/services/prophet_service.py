@@ -301,45 +301,53 @@ class ProphetService:
         category_predictions = {}
         total_current_predicted = 0
 
-        # Process categories in parallel using the existing main_executor
-        # Note: This method is already running in main_executor, so we reuse it
-        # to avoid nested ThreadPool creation (which would cause resource issues)
+        # Process categories in parallel using a separate ThreadPool
+        # Note: We need a separate executor to avoid deadlock. If we used main_executor,
+        # under concurrent load all workers would be blocked waiting for results they can't process.
+        # Using a separate pool ensures category tasks can always be processed.
         start_time = time.time()
-        logger.info(f"Processing {len(categories)} categories in parallel using main_executor")
 
-        # Submit all category prediction tasks to main_executor
-        future_to_category = {
-            self.main_executor.submit(self._predict_single_category, category, csv_data): category
-            for category in categories
-        }
+        # Calculate optimal worker count for category processing
+        # Use fewer workers than main_executor to prevent resource exhaustion
+        cpu_count = os.cpu_count() or 4
+        max_workers = min(len(categories), max(2, cpu_count // 2))  # At least 2, max half of CPU cores
+        logger.info(f"Processing {len(categories)} categories in parallel with {max_workers} workers (CPU count: {cpu_count})")
 
-        # Collect results as they complete
-        completed_count = 0
-        failed_count = 0
+        # Create a separate ThreadPool for category processing to prevent deadlock
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="category-worker") as category_executor:
+            # Submit all category prediction tasks
+            future_to_category = {
+                category_executor.submit(self._predict_single_category, category, csv_data): category
+                for category in categories
+            }
 
-        for future in as_completed(future_to_category):
-            category = future_to_category[future]
-            try:
-                result = future.result()
+            # Collect results as they complete
+            completed_count = 0
+            failed_count = 0
 
-                if result is not None:
-                    category_predictions[category] = result
-                    # Add to totals
-                    total_current_predicted += result['current_month']['predicted']
-                    completed_count += 1
-                    logger.debug(f"[{completed_count}/{len(categories)}] Completed: {category}")
-                else:
-                    logger.warning(f"No prediction result for category '{category}'")
+            for future in as_completed(future_to_category):
+                category = future_to_category[future]
+                try:
+                    result = future.result()
+
+                    if result is not None:
+                        category_predictions[category] = result
+                        # Add to totals
+                        total_current_predicted += result['current_month']['predicted']
+                        completed_count += 1
+                        logger.debug(f"[{completed_count}/{len(categories)}] Completed: {category}")
+                    else:
+                        logger.warning(f"No prediction result for category '{category}'")
+                        failed_count += 1
+
+                except Exception as e:
+                    logger.error(f"Exception occurred for category '{category}': {e}")
+                    category_predictions[category] = {
+                        'category': category,
+                        'error': str(e),
+                        'current_month': {'predicted': 0}
+                    }
                     failed_count += 1
-
-            except Exception as e:
-                logger.error(f"Exception occurred for category '{category}': {e}")
-                category_predictions[category] = {
-                    'category': category,
-                    'error': str(e),
-                    'current_month': {'predicted': 0}
-                }
-                failed_count += 1
 
         elapsed_time = time.time() - start_time
         logger.info(f"Parallel processing completed: {completed_count} succeeded, {failed_count} failed, {elapsed_time:.2f}s total")
