@@ -371,20 +371,26 @@ async def run_prophet_analysis(
     except Exception as e:
         logger.error(f"Prophet analysis failed for {file_id}: {str(e)}")
 
-        # Update job status to failed
+        # Update job status to failed with dedicated session management
+        job_session = None
         try:
-            if db is None:
-                db = next(get_db())
-            job = db.query(models.AnalysisJob).filter(
+            # Reuse existing session if available, otherwise create temporary one
+            job_session = db if db is not None else next(get_db())
+
+            job = job_session.query(models.AnalysisJob).filter(
                 models.AnalysisJob.job_id == job_id
             ).first()
             if job:
                 job.status = "failed"
                 job.error_message = str(e)
                 job.completed_at = datetime.now()
-            db.commit()
+            job_session.commit()
         except Exception as job_error:
             logger.error(f"Failed to update job status: {job_error}")
+        finally:
+            # Only close session if we created a temporary one
+            if job_session is not None and db is None:
+                job_session.close()
 
         # Store error metadata for debugging
         redis_client.set_analysis_metadata(file_id, {"error": str(e)})

@@ -117,8 +117,8 @@ class RedisClient:
             Lock token (UUID) if acquired, None if already locked
         """
         if not self.client:
-            logger.warning("Redis not available, skipping lock acquisition")
-            return str(uuid.uuid4())  # Return token for graceful degradation
+            logger.error("Redis not available, cannot acquire lock")
+            return None  # Fail fast - Redis is required for distributed locking
 
         try:
             lock_key = f"lock:analysis:{file_id}"
