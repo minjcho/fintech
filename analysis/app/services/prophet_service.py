@@ -11,6 +11,8 @@ from typing import Dict, Any, Optional, List
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
+import os
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -238,9 +240,13 @@ class ProphetService:
 
         Returns:
             Dictionary with prediction results for the category
+
+        Note:
+            Thread-safe: prepare_category_data() creates a copy of the category data,
+            ensuring no conflicts when multiple threads process different categories
         """
         try:
-            # Prepare data for this category
+            # Prepare data for this category (creates a copy for thread safety)
             prophet_data = self.prepare_category_data(csv_data, category)
 
             if len(prophet_data) < 2:
@@ -295,8 +301,16 @@ class ProphetService:
         category_predictions = {}
         total_current_predicted = 0
 
+        # Calculate optimal worker count: min(categories, CPU cores, 4)
+        # This prevents thread oversubscription and adapts to available resources
+        cpu_count = os.cpu_count() or 4
+        max_workers = min(len(categories), cpu_count, 4)
+        logger.info(f"Using {max_workers} workers for {len(categories)} categories (CPU count: {cpu_count})")
+
         # Process categories in parallel
-        with ThreadPoolExecutor(max_workers=4, thread_name_prefix="category-worker") as category_executor:
+        start_time = time.time()
+
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="category-worker") as category_executor:
             # Submit all category prediction tasks
             future_to_category = {
                 category_executor.submit(self._predict_single_category, category, csv_data): category
@@ -304,6 +318,9 @@ class ProphetService:
             }
 
             # Collect results as they complete
+            completed_count = 0
+            failed_count = 0
+
             for future in as_completed(future_to_category):
                 category = future_to_category[future]
                 try:
@@ -313,8 +330,11 @@ class ProphetService:
                         category_predictions[category] = result
                         # Add to totals
                         total_current_predicted += result['current_month']['predicted']
+                        completed_count += 1
+                        logger.debug(f"[{completed_count}/{len(categories)}] Completed: {category}")
                     else:
                         logger.warning(f"No prediction result for category '{category}'")
+                        failed_count += 1
 
                 except Exception as e:
                     logger.error(f"Exception occurred for category '{category}': {e}")
@@ -323,6 +343,10 @@ class ProphetService:
                         'error': str(e),
                         'current_month': {'predicted': 0}
                     }
+                    failed_count += 1
+
+        elapsed_time = time.time() - start_time
+        logger.info(f"Parallel processing completed: {completed_count} succeeded, {failed_count} failed, {elapsed_time:.2f}s total")
 
         # Set trend status
         trend = "analyzed"
