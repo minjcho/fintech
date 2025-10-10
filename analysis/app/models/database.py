@@ -23,9 +23,14 @@ ssl_context.check_hostname = False
 ssl_context.verify_mode = ssl.CERT_NONE
 
 # Create async engine with SSL config for aiomysql
+# Pool configuration for multi-worker setup
 engine = create_async_engine(
     ASYNC_DATABASE_URL,
-    echo=True,
+    echo=os.getenv("SQL_ECHO", "false").lower() == "true",  # Disable SQL logging in production
+    pool_size=5,  # Base connection pool size per worker
+    max_overflow=10,  # Additional connections if pool is exhausted
+    pool_pre_ping=True,  # Verify connections before use
+    pool_recycle=3600,  # Recycle connections after 1 hour
     connect_args={
         "ssl": ssl_context
     }

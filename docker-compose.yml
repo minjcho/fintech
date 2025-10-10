@@ -21,6 +21,12 @@ services:
       - analysis
       - csv-manager
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 800M  # 2 workers × ~300MB each
+        reservations:
+          memory: 512M
 
   # Classifier Service - 비용 분류
   classifier:
@@ -39,6 +45,12 @@ services:
     networks:
       - ai-network
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 800M  # 2 workers × ~300MB each
+        reservations:
+          memory: 512M
 
   # Analysis Service - 데이터 분석
   analysis:
@@ -60,6 +72,12 @@ services:
       - ai-network
     restart: unless-stopped
     # depends_on removed - using external Azure MySQL
+    deploy:
+      resources:
+        limits:
+          memory: 1.5G  # Buffer for 4 workers × ~300MB each
+        reservations:
+          memory: 1G
 
   # CSV Manager Service - CSV 파일 관리
   csv-manager:
@@ -80,6 +98,12 @@ services:
       - ai-network
     restart: unless-stopped
     # depends_on removed - using external Azure MySQL
+    deploy:
+      resources:
+        limits:
+          memory: 800M  # 2 workers × ~300MB each
+        reservations:
+          memory: 512M
 
   # MySQL Database container removed - using Azure MySQL instead
 
