@@ -316,18 +316,25 @@ async def run_prophet_analysis(
 
             # STEP 2: Start baseline calculation in background
             if background_tasks:
-                logger.info(f"Starting baseline calculation in background for {file_id}")
-                background_tasks.add_task(
-                    run_baseline_analysis,
-                    file_id,
-                    csv_data,
-                    lock_token
-                )
+                try:
+                    logger.info(f"Starting baseline calculation in background for {file_id}")
+                    background_tasks.add_task(
+                        run_baseline_analysis,
+                        file_id,
+                        csv_data,
+                        lock_token
+                    )
+                except Exception as bg_error:
+                    logger.error(f"Failed to schedule baseline task for {file_id}: {bg_error}")
+                    # Release lock if background task scheduling failed
+                    if lock_token:
+                        redis_client.release_analysis_lock(file_id, lock_token)
             else:
                 # Issue #1: If no background_tasks, release lock immediately
                 # (baseline won't run, so we must release the lock here)
                 logger.warning(f"No background_tasks available for {file_id}, releasing lock immediately")
-                redis_client.release_analysis_lock(file_id, lock_token)
+                if lock_token:
+                    redis_client.release_analysis_lock(file_id, lock_token)
             
             # Update job status
             job = db.query(models.AnalysisJob).filter(
@@ -383,7 +390,8 @@ async def run_prophet_analysis(
         redis_client.set_analysis_metadata(file_id, {"error": str(e)})
 
         # Release analysis lock on failure (since baseline won't run)
-        redis_client.release_analysis_lock(file_id, lock_token)
+        if lock_token:
+            redis_client.release_analysis_lock(file_id, lock_token)
     finally:
         # Always close the db connection
         if db:
