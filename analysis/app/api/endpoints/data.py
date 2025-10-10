@@ -47,10 +47,16 @@ class LeakDataResponse(BaseModel):
 
 async def run_baseline_analysis(
     file_id: str,
-    csv_data
+    csv_data,
+    lock_token: Optional[str] = None
 ):
     """
     Background task to run baseline analysis for past 11 months
+
+    Args:
+        file_id: File ID
+        csv_data: CSV data
+        lock_token: Lock token for ownership verification
     """
     db = None
     try:
@@ -105,13 +111,13 @@ async def run_baseline_analysis(
             logger.info(f"Baseline predictions saved for {file_id}")
 
         # Release analysis lock after baseline completion
-        redis_client.release_analysis_lock(file_id)
+        redis_client.release_analysis_lock(file_id, lock_token)
         logger.info(f"All analysis completed for {file_id}, lock released")
 
     except Exception as e:
         logger.error(f"Baseline analysis failed for {file_id}: {str(e)}")
         # Release analysis lock even on failure
-        redis_client.release_analysis_lock(file_id)
+        redis_client.release_analysis_lock(file_id, lock_token)
     finally:
         if db:
             db.close()
@@ -121,10 +127,18 @@ async def run_prophet_analysis(
     file_id: str,
     job_id: str,
     db: Session = None,
-    background_tasks: BackgroundTasks = None
+    background_tasks: BackgroundTasks = None,
+    lock_token: Optional[str] = None
 ):
     """
     Run Prophet analysis - current month immediately, baseline in background
+
+    Args:
+        file_id: File ID
+        job_id: Analysis job ID
+        db: Database session
+        background_tasks: FastAPI background tasks
+        lock_token: Lock token for ownership verification
     """
     try:
         # Get fresh DB session for task
@@ -306,8 +320,14 @@ async def run_prophet_analysis(
                 background_tasks.add_task(
                     run_baseline_analysis,
                     file_id,
-                    csv_data
+                    csv_data,
+                    lock_token
                 )
+            else:
+                # Issue #1: If no background_tasks, release lock immediately
+                # (baseline won't run, so we must release the lock here)
+                logger.warning(f"No background_tasks available for {file_id}, releasing lock immediately")
+                redis_client.release_analysis_lock(file_id, lock_token)
             
             # Update job status
             job = db.query(models.AnalysisJob).filter(
@@ -356,17 +376,14 @@ async def run_prophet_analysis(
                 job.error_message = str(e)
                 job.completed_at = datetime.now()
             db.commit()
-        except:
-            pass
-        finally:
-            if db:
-                db.close()
+        except Exception as job_error:
+            logger.error(f"Failed to update job status: {job_error}")
 
         # Store error metadata for debugging
         redis_client.set_analysis_metadata(file_id, {"error": str(e)})
 
         # Release analysis lock on failure (since baseline won't run)
-        redis_client.release_analysis_lock(file_id)
+        redis_client.release_analysis_lock(file_id, lock_token)
     finally:
         # Always close the db connection
         if db:
@@ -444,7 +461,8 @@ async def calculate_monthly_leak(
         )
 
     # Acquire analysis lock atomically to prevent concurrent analysis
-    if not redis_client.acquire_analysis_lock(file_id):
+    lock_token = redis_client.acquire_analysis_lock(file_id)
+    if not lock_token:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Analysis is already in progress for this file"
@@ -461,7 +479,7 @@ async def calculate_monthly_leak(
     db.commit()
 
     # Run analysis (current month sync, baseline in background)
-    await run_prophet_analysis(file_id, job_id, db, background_tasks)
+    await run_prophet_analysis(file_id, job_id, db, background_tasks, lock_token)
 
     # Analysis completed, now get the results
     predictions = db.query(models.Prediction).filter(
