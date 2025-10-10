@@ -75,9 +75,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1.5G  # Buffer for 4 workers × ~300MB each
+          memory: 2.5G  # Increased: 4 workers × ~500MB each + buffer
         reservations:
-          memory: 1G
+          memory: 1.5G
 
   # CSV Manager Service - CSV 파일 관리
   csv-manager:

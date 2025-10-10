@@ -24,11 +24,13 @@ ssl_context.verify_mode = ssl.CERT_NONE
 
 # Create async engine with SSL config for aiomysql
 # Pool configuration for multi-worker setup
+# Reduced pool size to prevent exceeding Azure MySQL connection limits
+# 4 workers × (3 + 5) = 32 connections (safe for most Azure tiers)
 engine = create_async_engine(
     ASYNC_DATABASE_URL,
     echo=os.getenv("SQL_ECHO", "false").lower() == "true",  # Disable SQL logging in production
-    pool_size=5,  # Base connection pool size per worker
-    max_overflow=10,  # Additional connections if pool is exhausted
+    pool_size=3,  # Reduced from 5 to minimize total connections
+    max_overflow=5,  # Reduced from 10 for connection limit safety
     pool_pre_ping=True,  # Verify connections before use
     pool_recycle=3600,  # Recycle connections after 1 hour
     connect_args={
@@ -97,9 +99,16 @@ class LeakAnalysis(Base):
 
 
 async def init_db():
-    """Initialize database tables"""
+    """
+    Initialize database tables (worker-safe)
+
+    This function is called in each worker's lifespan startup.
+    SQLAlchemy's create_all() uses CREATE TABLE IF NOT EXISTS,
+    which is safe for concurrent execution across multiple workers.
+    """
     from app.db.models import Base as DBBase  # Import from db/models.py
     async with engine.begin() as conn:
+        # create_all is idempotent and uses CREATE TABLE IF NOT EXISTS
         await conn.run_sync(DBBase.metadata.create_all)
 
 
