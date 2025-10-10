@@ -23,9 +23,16 @@ ssl_context.check_hostname = False
 ssl_context.verify_mode = ssl.CERT_NONE
 
 # Create async engine with SSL config for aiomysql
+# Pool configuration for multi-worker setup
+# Reduced pool size to prevent exceeding Azure MySQL connection limits
+# 4 workers × (3 + 5) = 32 connections (safe for most Azure tiers)
 engine = create_async_engine(
     ASYNC_DATABASE_URL,
-    echo=True,
+    echo=os.getenv("SQL_ECHO", "false").lower() == "true",  # Disable SQL logging in production
+    pool_size=3,  # Reduced from 5 to minimize total connections
+    max_overflow=5,  # Reduced from 10 for connection limit safety
+    pool_pre_ping=True,  # Verify connections before use
+    pool_recycle=3600,  # Recycle connections after 1 hour
     connect_args={
         "ssl": ssl_context
     }
@@ -92,10 +99,29 @@ class LeakAnalysis(Base):
 
 
 async def init_db():
-    """Initialize database tables"""
+    """
+    Initialize database tables (worker-safe with exception handling)
+
+    This function is called in each worker's lifespan startup.
+    SQLAlchemy's create_all() uses CREATE TABLE IF NOT EXISTS,
+    which is safe for concurrent execution across multiple workers.
+
+    Exception handling added to gracefully handle race conditions
+    when multiple workers attempt to create tables simultaneously.
+    """
     from app.db.models import Base as DBBase  # Import from db/models.py
-    async with engine.begin() as conn:
-        await conn.run_sync(DBBase.metadata.create_all)
+    try:
+        async with engine.begin() as conn:
+            # create_all is idempotent and uses CREATE TABLE IF NOT EXISTS
+            await conn.run_sync(DBBase.metadata.create_all)
+    except Exception as e:
+        # Log but don't fail - tables may already exist from another worker
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Database initialization encountered an issue (may be expected with multiple workers): {e}")
+        # Re-raise only if it's not a "table already exists" type error
+        if "already exists" not in str(e).lower():
+            raise
 
 
 async def get_db():
