@@ -29,6 +29,13 @@ class ProphetService:
             max_workers=2,
             thread_name_prefix="prophet-baseline"
         )
+        # Shared pool for category processing across all requests
+        # This prevents resource exhaustion under concurrent load
+        cpu_count = os.cpu_count() or 4
+        self.category_executor = ThreadPoolExecutor(
+            max_workers=min(cpu_count, 8),
+            thread_name_prefix="category-worker"
+        )
         
     def prepare_category_data(self, df: pd.DataFrame, category: str) -> pd.DataFrame:
         """
@@ -299,56 +306,50 @@ class ProphetService:
 
         # Store predictions for each category
         category_predictions = {}
-        total_current_predicted = 0
+        predictions_list = []  # Thread-safe collection for totals
 
-        # Process categories in parallel using a separate ThreadPool
-        # Note: We need a separate executor to avoid deadlock. If we used main_executor,
-        # under concurrent load all workers would be blocked waiting for results they can't process.
-        # Using a separate pool ensures category tasks can always be processed.
+        # Process categories in parallel using shared category_executor
+        # Using class-level shared executor prevents resource exhaustion under concurrent load
+        # (vs. creating new executor per request which could spawn 32+ threads)
         start_time = time.time()
+        logger.info(f"Processing {len(categories)} categories in parallel using shared category_executor")
 
-        # Calculate optimal worker count for category processing
-        # Use fewer workers than main_executor to prevent resource exhaustion
-        # Cap at 8 workers to prevent thread explosion with many categories
-        cpu_count = os.cpu_count() or 4
-        max_workers = min(len(categories), max(2, min(cpu_count // 2, 8)))  # At least 2, max 8 workers
-        logger.info(f"Processing {len(categories)} categories in parallel with {max_workers} workers (CPU count: {cpu_count})")
+        # Submit all category prediction tasks to shared executor
+        future_to_category = {
+            self.category_executor.submit(self._predict_single_category, category, csv_data): category
+            for category in categories
+        }
 
-        # Create a separate ThreadPool for category processing to prevent deadlock
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="category-worker") as category_executor:
-            # Submit all category prediction tasks
-            future_to_category = {
-                category_executor.submit(self._predict_single_category, category, csv_data): category
-                for category in categories
-            }
+        # Collect results as they complete
+        completed_count = 0
+        failed_count = 0
 
-            # Collect results as they complete
-            completed_count = 0
-            failed_count = 0
+        for future in as_completed(future_to_category):
+            category = future_to_category[future]
+            try:
+                result = future.result()
 
-            for future in as_completed(future_to_category):
-                category = future_to_category[future]
-                try:
-                    result = future.result()
-
-                    if result is not None:
-                        category_predictions[category] = result
-                        # Add to totals
-                        total_current_predicted += result['current_month']['predicted']
-                        completed_count += 1
-                        logger.debug(f"[{completed_count}/{len(categories)}] Completed: {category}")
-                    else:
-                        logger.warning(f"No prediction result for category '{category}'")
-                        failed_count += 1
-
-                except Exception as e:
-                    logger.error(f"Exception occurred for category '{category}': {e}")
-                    category_predictions[category] = {
-                        'category': category,
-                        'error': str(e),
-                        'current_month': {'predicted': 0}
-                    }
+                if result is not None:
+                    category_predictions[category] = result
+                    # Collect predictions for thread-safe summation later
+                    predictions_list.append(result['current_month']['predicted'])
+                    completed_count += 1
+                    logger.debug(f"[{completed_count}/{len(categories)}] Completed: {category}")
+                else:
+                    logger.warning(f"No prediction result for category '{category}'")
                     failed_count += 1
+
+            except Exception as e:
+                logger.error(f"Exception occurred for category '{category}': {e}")
+                category_predictions[category] = {
+                    'category': category,
+                    'error': str(e),
+                    'current_month': {'predicted': 0}
+                }
+                failed_count += 1
+
+        # Calculate total after all results collected (thread-safe)
+        total_current_predicted = sum(predictions_list)
 
         elapsed_time = time.time() - start_time
         logger.info(f"Parallel processing completed: {completed_count} succeeded, {failed_count} failed, {elapsed_time:.2f}s total")
