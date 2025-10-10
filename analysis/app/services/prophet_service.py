@@ -230,7 +230,7 @@ class ProphetService:
             logger.error(f"Error in Prophet category prediction: {e}")
             raise
     
-    def _predict_single_category(self, category: str, csv_data: pd.DataFrame) -> Dict[str, Any]:
+    def _predict_single_category(self, category: str, csv_data: pd.DataFrame) -> Optional[Dict[str, Any]]:
         """
         Predict spending for a single category (designed for parallel execution)
 
@@ -309,8 +309,9 @@ class ProphetService:
 
         # Calculate optimal worker count for category processing
         # Use fewer workers than main_executor to prevent resource exhaustion
+        # Cap at 8 workers to prevent thread explosion with many categories
         cpu_count = os.cpu_count() or 4
-        max_workers = min(len(categories), max(2, cpu_count // 2))  # At least 2, max half of CPU cores
+        max_workers = min(len(categories), max(2, min(cpu_count // 2, 8)))  # At least 2, max 8 workers
         logger.info(f"Processing {len(categories)} categories in parallel with {max_workers} workers (CPU count: {cpu_count})")
 
         # Create a separate ThreadPool for category processing to prevent deadlock
