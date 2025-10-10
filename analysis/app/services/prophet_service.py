@@ -18,7 +18,15 @@ class ProphetService:
     """Service for time series forecasting using Facebook Prophet - Category-wise"""
     
     def __init__(self):
-        self.executor = ThreadPoolExecutor(max_workers=4)
+        # Separate thread pools to prevent background tasks from blocking main requests
+        self.main_executor = ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix="prophet-main"
+        )
+        self.baseline_executor = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="prophet-baseline"
+        )
         
     def prepare_category_data(self, df: pd.DataFrame, category: str) -> pd.DataFrame:
         """
@@ -199,19 +207,19 @@ class ProphetService:
     async def predict_spending_by_category(self, csv_data: pd.DataFrame) -> Dict[str, Any]:
         """
         Main async method to predict spending by category using Prophet
-        
+
         Args:
             csv_data: DataFrame with transaction data including 'category' column
-            
+
         Returns:
             Dictionary with predictions for each category
         """
         loop = asyncio.get_event_loop()
-        
+
         try:
             # Run Prophet prediction in thread pool (CPU-intensive)
             result = await loop.run_in_executor(
-                self.executor,
+                self.main_executor,
                 self._predict_by_category_sync,
                 csv_data
             )
@@ -459,7 +467,7 @@ class ProphetService:
 
         try:
             result = await loop.run_in_executor(
-                self.executor,
+                self.main_executor,
                 self._predict_by_category_sync,
                 csv_data
             )
@@ -482,7 +490,7 @@ class ProphetService:
 
         try:
             result = await loop.run_in_executor(
-                self.executor,
+                self.baseline_executor,
                 self.calculate_baseline_predictions,
                 csv_data
             )
