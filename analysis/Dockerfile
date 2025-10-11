@@ -14,7 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 ENV PYTHONPATH=/app
+ENV UVICORN_WORKERS=4
 
 EXPOSE 8002
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002", "--workers", "4"]
+CMD uvicorn app.main:app --host 0.0.0.0 --port 8002 --workers ${UVICORN_WORKERS}

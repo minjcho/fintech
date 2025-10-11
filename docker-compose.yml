@@ -65,6 +65,10 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_HOST=${REDIS_HOST}
       - REDIS_PORT=${REDIS_PORT}
+      - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
+      - DB_POOL_RECYCLE=${DB_POOL_RECYCLE:-3600}
+      - DB_POOL_TIMEOUT=${DB_POOL_TIMEOUT:-30}
+      - DB_CONNECT_TIMEOUT=${DB_CONNECT_TIMEOUT:-10}
     volumes:
       - ./analysis:/app
       - ./dummy.csv:/app/dummy.csv:ro
