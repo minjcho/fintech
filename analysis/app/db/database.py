@@ -35,10 +35,18 @@ else:
     ssl_context.verify_mode = ssl.CERT_REQUIRED
 
 # Create database engine with SSL
-# NOTE: SQLAlchemy connection pool is SHARED across all Uvicorn workers
-# Workers=4: pool_size=20, max_overflow=40
-# Total connections available: pool_size + max_overflow = 60 connections (shared by all workers)
-# NOT 240 connections! The pool is created once and shared by all worker processes.
+# IMPORTANT: SQLAlchemy connection pool behavior with Uvicorn
+#
+# The pool is SHARED across all Uvicorn workers (not per-worker):
+# - Uvicorn uses os.fork() which shares the engine instance across workers
+# - Workers=4: pool_size=20, max_overflow=40
+# - Total connections: pool_size + max_overflow = 60 connections (SHARED, not multiplied by workers)
+# - NOT 240 connections! All workers compete for the same 60 connections.
+#
+# Under load with 4 workers and 60 connections:
+# - Average per worker: ~15 connections (60 / 4 = 15)
+# - Connections are dynamically allocated based on demand
+# - pool_timeout=30s means requests wait for available connections
 try:
     engine = create_engine(
         settings.DATABASE_URL,
