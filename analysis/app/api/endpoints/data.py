@@ -15,6 +15,10 @@ from app.services.s3_client import S3Client
 from app.db.database import get_db
 from app.db import models
 from app.deps.auth import get_current_user_id
+from app.repos.prediction_repo import PredictionRepository
+from app.repos.leak_repo import LeakAnalysisRepository
+from app.repos.doojo_repo import DoojoAnalysisRepository
+from app.repos.baseline_repo import BaselinePredictionRepository
 import csv
 import os
 
@@ -68,6 +72,13 @@ async def run_baseline_analysis(
 
         if baseline_predictions and baseline_predictions.get('baseline_months'):
             logger.info(f"Saving {len(baseline_predictions['baseline_months'])} months of baseline data")
+
+            # Initialize baseline repository
+            baseline_repo = BaselinePredictionRepository(db)
+
+            # Collect all baseline data for bulk upsert
+            all_baseline_data = []
+
             for month_key, month_data in baseline_predictions['baseline_months'].items():
                 if month_data['status'] != 'completed':
                     continue
@@ -76,39 +87,27 @@ async def run_baseline_analysis(
                 baseline_month = month_data['month']
                 cutoff_date = month_data.get('training_data_until', '').split('T')[0] if month_data.get('training_data_until') else None
 
-                # Save baseline for each category
+                # Collect baseline for each category
                 for category, cat_baseline in month_data.get('categories', {}).items():
-                    # Ensure predicted amount is not negative when saving
-                    predicted_amount = max(0.0, cat_baseline.get('predicted', 0))
+                    all_baseline_data.append({
+                        'category': category,
+                        'year': baseline_year,
+                        'month': baseline_month,
+                        'predicted_amount': cat_baseline.get('predicted', 0),
+                        'lower_bound': cat_baseline.get('lower_bound'),
+                        'upper_bound': cat_baseline.get('upper_bound'),
+                        'training_cutoff_date': cutoff_date
+                    })
 
-                    # Check existing baseline
-                    existing = db.query(models.BaselinePrediction).filter(
-                        models.BaselinePrediction.file_id == file_id,
-                        models.BaselinePrediction.category == category,
-                        models.BaselinePrediction.year == baseline_year,
-                        models.BaselinePrediction.month == baseline_month
-                    ).first()
-
-                    if not existing:
-                        baseline_pred = models.BaselinePrediction(
-                            file_id=file_id,
-                            category=category,
-                            year=baseline_year,
-                            month=baseline_month,
-                            predicted_amount=predicted_amount,
-                            lower_bound=cat_baseline.get('lower_bound'),
-                            upper_bound=cat_baseline.get('upper_bound'),
-                            training_cutoff_date=cutoff_date
-                        )
-                        db.add(baseline_pred)
-                    else:
-                        existing.predicted_amount = predicted_amount
-                        existing.lower_bound = cat_baseline.get('lower_bound')
-                        existing.upper_bound = cat_baseline.get('upper_bound')
-                        existing.training_cutoff_date = cutoff_date
+            # Bulk upsert all baselines at once (1 query instead of N×M)
+            if all_baseline_data:
+                baseline_repo.bulk_upsert_baselines(
+                    file_id=file_id,
+                    baseline_data=all_baseline_data
+                )
 
             db.commit()
-            logger.info(f"Baseline predictions saved for {file_id}")
+            logger.info(f"Baseline predictions saved for {file_id} ({len(all_baseline_data)} records)")
 
         # Release analysis lock after baseline completion
         redis_client.release_analysis_lock(file_id, lock_token)
@@ -188,127 +187,81 @@ async def run_prophet_analysis(
             category_predictions = current_month_result.get('category_predictions', {})
             year = current_month_result.get('year')
             month = current_month_result.get('month')
-            
-            # Save predictions for each category
+
+            # Initialize repositories
+            prediction_repo = PredictionRepository(db)
+            leak_repo = LeakAnalysisRepository(db)
+            doojo_repo = DoojoAnalysisRepository(db)
+
+            # STEP 1: Bulk upsert predictions (1 query instead of N)
+            prediction_repo.bulk_upsert_predictions(
+                file_id=file_id,
+                year=year,
+                month=month,
+                category_predictions=category_predictions
+            )
+
+            # STEP 2: Upsert leak analysis (1 query)
+            # Calculate if any category has actual data
+            has_actual_data = any(
+                cat_data.get('current_month', {}).get('actual') is not None
+                for cat_data in category_predictions.values()
+                if 'error' not in cat_data
+            )
+
+            if has_actual_data:
+                # Get first actual amount for leak analysis (aggregate later if needed)
+                first_actual = next(
+                    (cat_data.get('current_month', {}).get('actual')
+                     for cat_data in category_predictions.values()
+                     if 'error' not in cat_data and cat_data.get('current_month', {}).get('actual') is not None),
+                    None
+                )
+
+                leak_repo.upsert_leak_analysis(
+                    file_id=file_id,
+                    year=year,
+                    month=month,
+                    actual_amount=first_actual,
+                    predicted_amount=current_month_result.get('total_current_predicted', 0),
+                    leak_amount=0,  # Calculate total leak later
+                    analysis_data={'categories': category_predictions}
+                )
+
+            # STEP 3: Bulk upsert doojo analysis (1 query instead of N)
+            doojo_data = []
             for category, cat_data in category_predictions.items():
                 if 'error' in cat_data:
-                    logger.warning(f"Skipping category '{category}' due to error: {cat_data['error']}")
                     continue
-                    
+
                 current_month = cat_data.get('current_month', {})
-                
-                # Save current month prediction for this category
-                if year and month and current_month:
-                    current_date = f"{year}-{month:02d}-01"
-                    
-                    # Check existing prediction
-                    prediction = db.query(models.Prediction).filter(
-                        models.Prediction.file_id == file_id,
-                        models.Prediction.category == category,
-                        models.Prediction.prediction_date == current_date
-                    ).first()
-                    
-                    if not prediction:
-                        prediction = models.Prediction(
-                            file_id=file_id,
-                            category=category,
-                            prediction_date=current_date,
-                            predicted_amount=current_month.get('predicted', 0),
-                            lower_bound=current_month.get('lower_bound'),
-                            upper_bound=current_month.get('upper_bound')
-                        )
-                        db.add(prediction)
-                    else:
-                        prediction.predicted_amount = current_month.get('predicted', 0)
-                        prediction.lower_bound = current_month.get('lower_bound')
-                        prediction.upper_bound = current_month.get('upper_bound')
-                    
-                    # Save leak analysis if actual data exists for this category
-                    if current_month.get('actual') is not None:
-                        leak_calc = prophet_service.calculate_category_leak(
-                            actual_spending=current_month['actual'],
-                            predicted_spending=current_month['predicted'],
-                            category=category
-                        )
+                if not current_month:
+                    continue
 
-                        # Note: You may want to add category field to LeakAnalysis model
-                        leak = db.query(models.LeakAnalysis).filter(
-                            models.LeakAnalysis.file_id == file_id,
-                            models.LeakAnalysis.year == year,
-                            models.LeakAnalysis.month == month
-                        ).first()
+                cat_stats = category_stats.get(category, {'min': 0, 'max': 0})
+                real_amount = current_month_actual.get(category, None)
+                result = None
+                if real_amount is not None:
+                    result = 'true' if real_amount > current_month.get('predicted', 0) else 'false'
 
-                        if not leak:
-                            leak = models.LeakAnalysis(
-                                file_id=file_id,
-                                year=year,
-                                month=month,
-                                actual_amount=current_month.get('actual'),
-                                predicted_amount=current_month_result.get('total_current_predicted'),
-                                leak_amount=0,  # Will calculate total leak later
-                                analysis_data={'categories': category_predictions}
-                            )
-                            try:
-                                db.add(leak)
-                                db.flush()  # Try to insert immediately to detect duplicate key
-                            except Exception as e:
-                                db.rollback()
-                                # If duplicate key error, fetch and update existing record
-                                leak = db.query(models.LeakAnalysis).filter(
-                                    models.LeakAnalysis.file_id == file_id,
-                                    models.LeakAnalysis.year == year,
-                                    models.LeakAnalysis.month == month
-                                ).first()
-                                if leak:
-                                    leak.actual_amount = current_month.get('actual')
-                                    leak.predicted_amount = current_month_result.get('total_current_predicted')
-                                    leak.leak_amount = 0
-                                    leak.analysis_data = {'categories': category_predictions}
-                                else:
-                                    raise e
-                        else:
-                            # Update existing leak analysis
-                            leak.actual_amount = current_month.get('actual')
-                            leak.predicted_amount = current_month_result.get('total_current_predicted')
-                            leak.leak_amount = 0
-                            leak.analysis_data = {'categories': category_predictions}
+                doojo_data.append({
+                    'category': category,
+                    'min_amount': float(cat_stats['min']),
+                    'max_amount': float(cat_stats['max']),
+                    'current_threshold': current_month.get('predicted', 0),
+                    'real_amount': real_amount,
+                    'result': result
+                })
 
-                    # Save doojo analysis for this category
-                    cat_stats = category_stats.get(category, {'min': 0, 'max': 0})
-                    real_amount = current_month_actual.get(category, None)
-                    result = None
-                    if real_amount is not None:
-                        result = 'true' if real_amount > current_month.get('predicted', 0) else 'false'
+            if doojo_data:
+                doojo_repo.bulk_upsert_doojo_analysis(
+                    file_id=file_id,
+                    year=year,
+                    month=month,
+                    category_data=doojo_data
+                )
 
-                    # Check if doojo analysis exists
-                    doojo = db.query(models.DoojoAnalysis).filter(
-                        models.DoojoAnalysis.file_id == file_id,
-                        models.DoojoAnalysis.category == category,
-                        models.DoojoAnalysis.year == year,
-                        models.DoojoAnalysis.month == month
-                    ).first()
-
-                    if not doojo:
-                        doojo = models.DoojoAnalysis(
-                            file_id=file_id,
-                            category=category,
-                            year=year,
-                            month=month,
-                            min_amount=float(cat_stats['min']),
-                            max_amount=float(cat_stats['max']),
-                            current_threshold=current_month.get('predicted', 0),
-                            real_amount=real_amount,
-                            result=result
-                        )
-                        db.add(doojo)
-                    else:
-                        doojo.min_amount = float(cat_stats['min'])
-                        doojo.max_amount = float(cat_stats['max'])
-                        doojo.current_threshold = current_month.get('predicted', 0)
-                        doojo.real_amount = real_amount
-                        doojo.result = result
-                
-                # Next month predictions removed - no longer needed
+            # Next month predictions removed - no longer needed
 
             # Commit current month predictions first
             db.commit()
