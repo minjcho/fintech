@@ -10,6 +10,7 @@ import logging
 from app.services.redis_client import RedisClient
 from app.db.database import get_db
 from app.db import models
+from app.core.constants import BASELINE_MONTHS_COUNT, PROPHET_MIN_DATA_DAYS, PROPHET_MIN_TRANSACTIONS
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -58,7 +59,7 @@ async def get_baseline_predictions(
     # Check data availability and provide detailed feedback
     current_date = datetime.now()
     expected_months = []
-    for i in range(11, 0, -1):  # Past 11 months
+    for i in range(BASELINE_MONTHS_COUNT, 0, -1):  # Past N months (from constants)
         calc_date = current_date - timedelta(days=30 * i)
         expected_months.append(f"{calc_date.year}-{calc_date.month:02d}")
 
@@ -70,9 +71,9 @@ async def get_baseline_predictions(
             "error": "No baseline predictions available",
             "reason": "Insufficient historical data for baseline analysis",
             "requirements": {
-                "minimum_days": 30,
-                "minimum_transactions": 30,
-                "description": "Baseline analysis requires at least 30 days of historical data"
+                "minimum_days": PROPHET_MIN_DATA_DAYS,
+                "minimum_transactions": PROPHET_MIN_TRANSACTIONS,
+                "description": f"Baseline analysis requires at least {PROPHET_MIN_DATA_DAYS} days of historical data"
             },
             "expected_months": expected_months,
             "available_months": [],
@@ -183,7 +184,7 @@ async def get_baseline_predictions(
             }
             for month in sorted_months
         ],
-        "months_count": 11,  # Always 11 months
+        "months_count": BASELINE_MONTHS_COUNT,  # Always N months (from constants)
         "category_filter": category
     }
 

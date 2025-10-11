@@ -19,6 +19,7 @@ from app.api.endpoints.models import (
     MostSpentDetail,
     MostFrequentDetail
 )
+from app.core.constants import AI_MAX_TOKENS, EXCLUDED_CATEGORIES
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -152,7 +153,7 @@ async def get_doojo_data(
                 messages=[
                     {"role": "user", "content": prompt}
                 ],
-                max_completion_tokens=1000
+                max_completion_tokens=AI_MAX_TOKENS  # From constants
             )
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -165,8 +166,8 @@ async def get_doojo_data(
 
     # Process each category
     for category in csv_data['category'].unique():
-        # Skip "보험 / 세금" category
-        if category == "보험 / 세금":
+        # Skip excluded categories (e.g., "보험 / 세금")
+        if category in EXCLUDED_CATEGORIES:
             continue
 
         # Calculate min/max/avg from monthly spending

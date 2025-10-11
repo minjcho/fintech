@@ -43,3 +43,20 @@ CATEGORIES = [
     "기타"
 ]
 TOTAL_CATEGORIES = len(CATEGORIES)  # 13 categories
+
+# Categories excluded from doojo (두꺼비) analysis - Issue #25
+# These are typically fixed/non-discretionary expenses
+EXCLUDED_CATEGORIES = [
+    "보험 / 세금"  # Insurance/Tax - fixed recurring expenses (with spaces)
+]
+
+# ===== AI/GPT Configuration =====
+# OpenAI GPT parameters for message generation - Issue #25
+AI_MAX_TOKENS = 1000  # Maximum completion tokens for GPT responses
+AI_TEMPERATURE = 0.3  # Temperature for GPT (0.0 = deterministic, 1.0 = creative)
+AI_MODEL_DEFAULT = "gpt-5-nano"  # Default model for doojo advice generation
+
+# ===== Gateway Configuration =====
+# Timeout values for API Gateway - Issue #10
+GATEWAY_SHORT_TIMEOUT = 10.0  # seconds - for quick operations (status checks)
+GATEWAY_LONG_TIMEOUT = 120.0  # seconds - for analysis/processing operations
