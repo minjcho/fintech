@@ -7,6 +7,7 @@ import json
 from typing import Optional, Dict, Any
 import logging
 import asyncio
+from app.core.constants import GATEWAY_SHORT_TIMEOUT, GATEWAY_LONG_TIMEOUT
 
 # CSV router removed - now handled by csv-manager service
 
@@ -70,7 +71,7 @@ async def fetch_service_openapi(service_name: str, service_config: dict) -> Opti
     max_retries = 3
     for retry in range(max_retries):
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:  # Increased timeout
+            async with httpx.AsyncClient(timeout=GATEWAY_SHORT_TIMEOUT) as client:  # Short timeout for OpenAPI fetch
                 response = await client.get(f"{service_config['url']}/openapi.json")
                 if response.status_code == 200:
                     spec = response.json()
@@ -332,7 +333,7 @@ async def proxy_request(
     headers.pop("host", None)
     
     try:
-        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=GATEWAY_LONG_TIMEOUT, follow_redirects=True) as client:
             # Get request body if present
             body = None
             if method in ["POST", "PUT", "PATCH"]:

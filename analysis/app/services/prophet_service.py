@@ -13,6 +13,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import uuid
 import os
 import time
+from app.core.constants import (
+    PROPHET_MAIN_WORKERS,
+    PROPHET_BASELINE_WORKERS,
+    PROPHET_INTERVAL_WIDTH,
+    PROPHET_FORECAST_PERIODS,
+    PROPHET_MIN_DATA_DAYS,
+    BASELINE_MONTHS_COUNT
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +30,11 @@ class ProphetService:
     def __init__(self):
         # Separate thread pools to prevent background tasks from blocking main requests
         self.main_executor = ThreadPoolExecutor(
-            max_workers=4,
+            max_workers=PROPHET_MAIN_WORKERS,
             thread_name_prefix="prophet-main"
         )
         self.baseline_executor = ThreadPoolExecutor(
-            max_workers=2,
+            max_workers=PROPHET_BASELINE_WORKERS,
             thread_name_prefix="prophet-baseline"
         )
         # Shared pool for category processing across all requests
@@ -99,7 +107,7 @@ class ProphetService:
                 yearly_seasonality=False,
                 seasonality_mode='additive',
                 changepoint_prior_scale=0.1,
-                interval_width=0.95
+                interval_width=PROPHET_INTERVAL_WIDTH
             )
         elif category in ['교통 / 차량', 'Transportation']:
             # Transportation has monthly patterns
@@ -109,7 +117,7 @@ class ProphetService:
                 yearly_seasonality=False,
                 seasonality_mode='additive',
                 changepoint_prior_scale=0.05,
-                interval_width=0.95
+                interval_width=PROPHET_INTERVAL_WIDTH
             )
             model.add_seasonality(name='monthly', period=30.5, fourier_order=5)
         else:
@@ -120,7 +128,7 @@ class ProphetService:
                 yearly_seasonality=False,
                 seasonality_mode='multiplicative',
                 changepoint_prior_scale=0.05,
-                interval_width=0.95
+                interval_width=PROPHET_INTERVAL_WIDTH
             )
         
         # Fit the model
@@ -400,10 +408,10 @@ class ProphetService:
         
         logger.info(f"Data range: {min_date} to {max_date}")
         
-        # Calculate for past 11 months from current month
-        # 현재월 기준 과거 11개월 계산
+        # Calculate for past months from current month
+        # 현재월 기준 과거 개월 계산
         months_to_calculate = []
-        for i in range(11, 0, -1):  # 11개월 전부터 1개월 전까지
+        for i in range(BASELINE_MONTHS_COUNT, 0, -1):  # N개월 전부터 1개월 전까지
             calc_date = current_date - timedelta(days=30 * i)
             months_to_calculate.append((calc_date.year, calc_date.month))
 
@@ -428,8 +436,8 @@ class ProphetService:
                 for category in all_categories
             }
 
-            if len(train_data) < 30:  # Need at least 30 days of data
-                logger.warning(f"Not enough data for baseline {month_key} - returning zeros")
+            if len(train_data) < PROPHET_MIN_DATA_DAYS:  # Need at least minimum days of data
+                logger.warning(f"Not enough data for baseline {month_key} (need {PROPHET_MIN_DATA_DAYS} days) - returning zeros")
                 baseline_results[month_key] = {
                     'year': target_year,
                     'month': target_month,
@@ -470,7 +478,7 @@ class ProphetService:
                         continue
                     
                     # Predict for target month
-                    future = model.make_future_dataframe(periods=60)
+                    future = model.make_future_dataframe(periods=PROPHET_FORECAST_PERIODS * 2)
                     forecast = model.predict(future)
                     
                     # Filter for target month

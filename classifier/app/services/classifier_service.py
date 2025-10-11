@@ -13,6 +13,13 @@ from app.models.schemas import (
     ClassificationResult
 )
 from app.core.config import settings
+from app.core.constants import (
+    HIGH_AMOUNT_THRESHOLD,
+    CONFIDENCE_VERY_HIGH,
+    CONFIDENCE_HIGH,
+    CONFIDENCE_MEDIUM,
+    CONFIDENCE_LOW
+)
 
 logger = logging.getLogger(__name__)
 
@@ -187,8 +194,8 @@ class ClassifierService:
                 return {"category": "생활용품", "subcategory": "가전제품", "confidence": 0.90}
 
         # Rule 7: High amount adjustments (likely home appliances or furniture)
-        if amount >= 500000 and category in ["마트/편의점", "기타"]:
-            logger.info(f"Rule correction: High amount {amount} → 생활용품")
+        if amount >= HIGH_AMOUNT_THRESHOLD and category in ["마트/편의점", "기타"]:
+            logger.info(f"Rule correction: High amount {amount} (threshold: {HIGH_AMOUNT_THRESHOLD:,}) → 생활용품")
             return {"category": "생활용품", "subcategory": "가전제품", "confidence": 0.80}
 
         # No correction needed
