@@ -14,12 +14,13 @@
 --    mysql -h <server> -u <username> -p < scripts/check_mysql_connections.sql
 
 -- Check current max_connections limit
+-- NOTE: SQLAlchemy pool is SHARED across workers (not per-worker)
 SELECT
     @@max_connections AS max_connections,
     @@max_connections - 10 AS available_for_app,
     CASE
-        WHEN @@max_connections >= 240 THEN '✅ Sufficient for 4 workers'
-        WHEN @@max_connections >= 120 THEN '⚠️  Sufficient for 2 workers only'
+        WHEN @@max_connections >= 60 THEN '✅ Sufficient for current config (60 connections)'
+        WHEN @@max_connections >= 30 THEN '⚠️  May be tight - consider reducing workers'
         ELSE '❌ Insufficient - upgrade required'
     END AS status
 ;
@@ -43,17 +44,19 @@ ORDER BY connection_count DESC
 ;
 
 -- Calculate required connections for analysis service
+-- IMPORTANT: Pool is SHARED across all workers (Uvicorn uses fork)
 SELECT
     'Analysis Service Requirements' AS service,
     4 AS uvicorn_workers,
-    20 AS pool_size_per_worker,
-    40 AS max_overflow_per_worker,
-    (20 + 40) * 4 AS total_connections_needed,
+    20 AS pool_size,
+    40 AS max_overflow,
+    20 + 40 AS total_connections_needed,  -- Shared across ALL workers
     @@max_connections AS mysql_max_connections,
     CASE
-        WHEN @@max_connections >= (20 + 40) * 4 THEN '✅ OK'
+        WHEN @@max_connections >= 60 THEN '✅ OK'
         ELSE '❌ Need upgrade'
-    END AS verdict
+    END AS verdict,
+    'Pool is SHARED, not per-worker!' AS important_note
 ;
 
 -- ==========================================
@@ -62,7 +65,7 @@ SELECT
 -- Option 1: Reduce pool size (modify .env)
 --   UVICORN_WORKERS=2
 --   This will auto-adjust pool_size to 10 and max_overflow to 20
---   Total: 2 * (10 + 20) = 60 connections
+--   Total: 10 + 20 = 30 connections (SHARED across 2 workers)
 
 -- Option 2: Upgrade Azure MySQL tier
 --   az mysql server update \
