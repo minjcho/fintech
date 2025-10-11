@@ -39,14 +39,18 @@ async def run_prophet_analysis(
     Args:
         file_id: File ID
         job_id: Analysis job ID
-        db: Database session
+        db: Database session (if None, will create a new session)
         background_tasks: FastAPI background tasks
         lock_token: Lock token for ownership verification
     """
+    # Track whether we created the session (to know if we should close it)
+    session_created = False
+
     try:
-        # Get fresh DB session for task
+        # Get fresh DB session for task if not provided
         if db is None:
             db = next(get_db())
+            session_created = True
 
         # Lock already acquired in calculate_monthly_leak
         # No need to set status here
@@ -244,8 +248,8 @@ async def run_prophet_analysis(
         except Exception as job_error:
             logger.error(f"Failed to update job status: {job_error}")
         finally:
-            # Only close session if we created a temporary one
-            if job_session is not None and db is None:
+            # Only close session if we created a temporary one for job update
+            if job_session is not None and job_session != db:
                 job_session.close()
 
         # Store error metadata for debugging
@@ -255,6 +259,6 @@ async def run_prophet_analysis(
         if lock_token:
             redis_client.release_analysis_lock(file_id, lock_token)
     finally:
-        # Always close the db connection
-        if db:
+        # Only close the db connection if we created it in this function
+        if session_created and db:
             db.close()

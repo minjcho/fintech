@@ -1,7 +1,7 @@
 """
 Leak analysis endpoints - Current month predictions
 """
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, Query, HTTPException, status, Depends, BackgroundTasks
 from datetime import datetime
 from sqlalchemy.orm import Session
@@ -19,6 +19,55 @@ logger = logging.getLogger(__name__)
 
 # Initialize services
 redis_client = RedisClient()
+
+
+def _build_leak_response(
+    file_id: str,
+    year: int,
+    month: int,
+    predictions: List[models.Prediction],
+    leak_analysis: Optional[models.LeakAnalysis]
+) -> LeakDataResponse:
+    """
+    Helper function to build LeakDataResponse from predictions.
+
+    Args:
+        file_id: File ID
+        year: Year
+        month: Month
+        predictions: List of predictions
+        leak_analysis: Leak analysis record (optional)
+
+    Returns:
+        LeakDataResponse
+    """
+    category_predictions = {}
+    total_predicted = 0
+
+    for pred in predictions:
+        category_predictions[pred.category] = {
+            "predicted_amount": float(pred.predicted_amount),
+            "lower_bound": float(pred.lower_bound) if pred.lower_bound else None,
+            "upper_bound": float(pred.upper_bound) if pred.upper_bound else None
+        }
+        total_predicted += pred.predicted_amount
+
+    details = {
+        "total_predicted": float(total_predicted),
+        "categories_count": len(predictions),
+        "category_predictions": category_predictions,
+        "prediction_date": predictions[0].prediction_date.isoformat() if predictions else None,
+        "created_at": predictions[0].created_at.isoformat() if predictions else None
+    }
+
+    return LeakDataResponse(
+        file_id=file_id,
+        year=year,
+        month=month,
+        leak_amount=float(leak_analysis.leak_amount) if leak_analysis and leak_analysis.leak_amount else 0.0,
+        transactions_count=len(predictions),
+        details=details
+    )
 
 
 @router.post(
@@ -48,39 +97,13 @@ async def calculate_monthly_leak(
 
     if predictions:
         # We already have predictions, return them immediately
-        category_predictions = {}
-        total_predicted = 0
-
-        for pred in predictions:
-            category_predictions[pred.category] = {
-                "predicted_amount": float(pred.predicted_amount),
-                "lower_bound": float(pred.lower_bound) if pred.lower_bound else None,
-                "upper_bound": float(pred.upper_bound) if pred.upper_bound else None
-            }
-            total_predicted += pred.predicted_amount
-
-        details = {
-            "total_predicted": float(total_predicted),
-            "categories_count": len(predictions),
-            "category_predictions": category_predictions,
-            "prediction_date": predictions[0].prediction_date.isoformat() if predictions else None,
-            "created_at": predictions[0].created_at.isoformat() if predictions else None
-        }
-
         leak_analysis = db.query(models.LeakAnalysis).filter(
             models.LeakAnalysis.file_id == file_id,
             models.LeakAnalysis.year == year,
             models.LeakAnalysis.month == month
         ).first()
 
-        return LeakDataResponse(
-            file_id=file_id,
-            year=year,
-            month=month,
-            leak_amount=float(leak_analysis.leak_amount) if leak_analysis and leak_analysis.leak_amount else 0.0,
-            transactions_count=len(predictions),
-            details=details
-        )
+        return _build_leak_response(file_id, year, month, predictions, leak_analysis)
 
     # No predictions yet, need to run analysis
     # Check if file exists in Redis
@@ -124,40 +147,14 @@ async def calculate_monthly_leak(
             detail=f"Analysis completed but no predictions found"
         )
 
-    # Build response
-    category_predictions = {}
-    total_predicted = 0
-
-    for pred in predictions:
-        category_predictions[pred.category] = {
-            "predicted_amount": float(pred.predicted_amount),
-            "lower_bound": float(pred.lower_bound) if pred.lower_bound else None,
-            "upper_bound": float(pred.upper_bound) if pred.upper_bound else None
-        }
-        total_predicted += pred.predicted_amount
-
-    details = {
-        "total_predicted": float(total_predicted),
-        "categories_count": len(predictions),
-        "category_predictions": category_predictions,
-        "prediction_date": predictions[0].prediction_date.isoformat() if predictions else None,
-        "created_at": predictions[0].created_at.isoformat() if predictions else None
-    }
-
+    # Build response using helper function
     leak_analysis = db.query(models.LeakAnalysis).filter(
         models.LeakAnalysis.file_id == file_id,
         models.LeakAnalysis.year == year,
         models.LeakAnalysis.month == month
     ).first()
 
-    return LeakDataResponse(
-        file_id=file_id,
-        year=year,
-        month=month,
-        leak_amount=float(leak_analysis.leak_amount) if leak_analysis and leak_analysis.leak_amount else 0.0,
-        transactions_count=len(predictions),
-        details=details
-    )
+    return _build_leak_response(file_id, year, month, predictions, leak_analysis)
 
 
 @router.get(

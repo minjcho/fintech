@@ -126,8 +126,16 @@ async def get_doojo_data(
     ]
 
     # Initialize OpenAI client for message generation
+    api_key = os.getenv('GMS_API_KEY')
+    if not api_key:
+        logger.error("GMS_API_KEY not configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI advice service not configured. Please contact administrator."
+        )
+
     gms_client = OpenAI(
-        api_key=os.getenv('GMS_API_KEY'),
+        api_key=api_key,
         base_url=os.getenv('GMS_BASE_URL', 'https://gms.ssafy.io/gmsapi/api.openai.com/v1')
     )
 
@@ -149,7 +157,11 @@ async def get_doojo_data(
             return response.choices[0].message.content.strip()
         except Exception as e:
             logger.error(f"Failed to generate message for {merchant}: {e}")
-            return None
+            # Return fallback message instead of None
+            if message_type == 'most_spent':
+                return f"{merchant}에서 {amount:,.0f}원 지출했네. 지출 패턴을 확인해보자."
+            else:
+                return f"{merchant}에 {count}회 방문했네. 자주 가는 곳이니 할인 혜택을 찾아보는 것도 좋을 것 같아."
 
     # Process each category
     for category in csv_data['category'].unique():
