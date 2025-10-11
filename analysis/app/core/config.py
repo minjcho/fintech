@@ -39,7 +39,25 @@ class Settings(BaseSettings):
     MAX_DATA_POINTS: int = 10000
     CONFIDENCE_THRESHOLD: float = 0.8
     ANOMALY_THRESHOLD: float = 0.95
-    
+
+    # Uvicorn Settings
+    UVICORN_WORKERS: int = Field(default=4, env="UVICORN_WORKERS")
+
+    # Database Pool Settings
+    # Dynamic pool sizing based on worker count
+    # pool_size = workers * 5, max_overflow = workers * 10
+    @property
+    def DB_POOL_SIZE(self) -> int:
+        return max(10, self.UVICORN_WORKERS * 5)
+
+    @property
+    def DB_MAX_OVERFLOW(self) -> int:
+        return max(20, self.UVICORN_WORKERS * 10)
+
+    DB_POOL_RECYCLE: int = Field(default=3600, env="DB_POOL_RECYCLE")  # 1 hour
+    DB_POOL_TIMEOUT: int = Field(default=30, env="DB_POOL_TIMEOUT")
+    DB_CONNECT_TIMEOUT: int = Field(default=10, env="DB_CONNECT_TIMEOUT")
+
     # Logging
     LOG_LEVEL: str = "INFO"
     
