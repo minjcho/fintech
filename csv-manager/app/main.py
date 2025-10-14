@@ -4,6 +4,7 @@ CSV Manager Service - Dedicated service for CSV file management
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+import sys
 
 from app.api.endpoints import csv
 from app.core.config import settings
@@ -20,6 +21,48 @@ app = FastAPI(
     redoc_url="/redoc",
     openapi_url="/openapi.json"
 )
+
+
+@app.on_event("startup")
+async def validate_environment():
+    """Validate all required environment variables on startup"""
+    logger.info("Validating environment variables...")
+
+    missing_vars = []
+
+    # Check required variables
+    required_vars = {
+        'MINIO_ENDPOINT': settings.MINIO_ENDPOINT,
+        'MINIO_ACCESS_KEY': settings.MINIO_ACCESS_KEY,
+        'MINIO_SECRET_KEY': settings.MINIO_SECRET_KEY,
+        'MINIO_BUCKET': settings.MINIO_BUCKET,
+    }
+
+    for var_name, var_value in required_vars.items():
+        if not var_value:
+            missing_vars.append(var_name)
+
+    if missing_vars:
+        error_message = (
+            f"\n{'='*60}\n"
+            f"❌ CONFIGURATION ERROR - CSV Manager Service\n"
+            f"{'='*60}\n"
+            f"Missing required environment variables:\n"
+        )
+        for var in missing_vars:
+            error_message += f"  - {var}\n"
+        error_message += (
+            f"\nPlease:\n"
+            f"1. Copy .env.example to .env\n"
+            f"2. Fill in the required values\n"
+            f"3. Restart the service\n"
+            f"{'='*60}\n"
+        )
+
+        logger.error(error_message)
+        sys.exit(1)
+
+    logger.info("✅ All required environment variables are set")
 
 # CORS configuration
 app.add_middleware(
