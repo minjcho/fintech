@@ -2,11 +2,13 @@
 Expense Classification using OpenAI GPT API
 """
 import openai
+from openai.error import OpenAIError, RateLimitError, APIError, Timeout
 from typing import Dict, Any, List, Optional
 import json
 import logging
 from datetime import datetime
 import asyncio
+from fastapi import HTTPException
 from app.models.schemas import JobStatus, ClassificationJob
 
 logger = logging.getLogger(__name__)
@@ -67,8 +69,23 @@ class GPTClassifierService:
             
             return result
             
+        except (RateLimitError, Timeout) as e:
+            logger.warning(f"GPT API rate limit or timeout: {str(e)}")
+            # Fallback to rule-based classification
+            return self._fallback_classification(merchant_name, amount)
+
+        except APIError as e:
+            logger.error(f"OpenAI API error: {str(e)}")
+            # Fallback to rule-based classification
+            return self._fallback_classification(merchant_name, amount)
+
+        except ValueError as e:
+            logger.error(f"GPT response parsing error: {str(e)}")
+            # Fallback to rule-based classification
+            return self._fallback_classification(merchant_name, amount)
+
         except Exception as e:
-            logger.error(f"GPT classification failed: {str(e)}")
+            logger.exception(f"Unexpected GPT classification error: {type(e).__name__}")
             # Fallback to rule-based classification
             return self._fallback_classification(merchant_name, amount)
     
@@ -127,9 +144,33 @@ class GPTClassifierService:
             
             return response.choices[0].message.content
             
+        except RateLimitError as e:
+            logger.warning(f"OpenAI rate limit exceeded: {str(e)}")
+            raise HTTPException(
+                status_code=429,
+                detail="AI service rate limit exceeded. Please try again later."
+            )
+
+        except Timeout as e:
+            logger.error(f"OpenAI API timeout: {str(e)}")
+            raise HTTPException(
+                status_code=504,
+                detail="AI service request timeout"
+            )
+
+        except APIError as e:
+            logger.error(f"OpenAI API error: {str(e)}")
+            raise HTTPException(
+                status_code=503,
+                detail="AI service temporarily unavailable"
+            )
+
         except Exception as e:
-            logger.error(f"OpenAI API call failed: {str(e)}")
-            raise
+            logger.exception(f"Unexpected OpenAI API error: {type(e).__name__}")
+            raise HTTPException(
+                status_code=500,
+                detail="AI classification service error"
+            )
     
     def _parse_gpt_response(self, response: str) -> Dict[str, Any]:
         """Parse GPT response JSON"""
@@ -251,11 +292,32 @@ class GPTClassifierService:
             
             return results
             
-        except Exception as e:
-            logger.error(f"Batch processing failed for job {job_id}: {str(e)}")
+        except RateLimitError as e:
+            logger.error(f"Batch processing rate limited for job {job_id}: {str(e)}")
+            self.jobs[job_id].status = JobStatus.FAILED
+            self.jobs[job_id].error_message = "Rate limit exceeded"
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests. Please try again later."
+            )
+
+        except ValueError as e:
+            logger.error(f"Batch processing validation error for job {job_id}: {str(e)}")
             self.jobs[job_id].status = JobStatus.FAILED
             self.jobs[job_id].error_message = str(e)
-            raise
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid batch data: {str(e)}"
+            )
+
+        except Exception as e:
+            logger.exception(f"Unexpected batch processing error for job {job_id}: {type(e).__name__}")
+            self.jobs[job_id].status = JobStatus.FAILED
+            self.jobs[job_id].error_message = str(e)
+            raise HTTPException(
+                status_code=500,
+                detail="Batch classification failed"
+            )
     
     async def get_job_status(self, job_id: str) -> Optional[ClassificationJob]:
         """Get status of classification job"""
