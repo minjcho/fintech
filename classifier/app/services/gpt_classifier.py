@@ -2,7 +2,7 @@
 Expense Classification using OpenAI GPT API
 """
 import openai
-from openai.error import OpenAIError, RateLimitError, APIError, Timeout
+from openai import OpenAIError, RateLimitError, APIError, APITimeoutError
 from typing import Dict, Any, List, Optional
 import json
 import logging
@@ -69,7 +69,7 @@ class GPTClassifierService:
             
             return result
             
-        except (RateLimitError, Timeout) as e:
+        except (RateLimitError, APITimeoutError) as e:
             logger.warning(f"GPT API rate limit or timeout: {str(e)}")
             # Fallback to rule-based classification
             return self._fallback_classification(merchant_name, amount)
@@ -151,7 +151,7 @@ class GPTClassifierService:
                 detail="AI service rate limit exceeded. Please try again later."
             )
 
-        except Timeout as e:
+        except APITimeoutError as e:
             logger.error(f"OpenAI API timeout: {str(e)}")
             raise HTTPException(
                 status_code=504,
