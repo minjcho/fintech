@@ -15,6 +15,74 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize database on startup and cleanup on shutdown"""
+    import sys
+    from sqlalchemy import text
+
+    # Validate environment variables
+    logger.info("Validating environment variables...")
+
+    missing_vars = []
+    required_vars = {
+        'DATABASE_URL': settings.DATABASE_URL,
+        'REDIS_HOST': settings.REDIS_HOST,
+        'REDIS_PORT': settings.REDIS_PORT,
+        'REDIS_DB': settings.REDIS_DB,
+        'MINIO_ENDPOINT': settings.MINIO_ENDPOINT,
+        'MINIO_ACCESS_KEY': settings.MINIO_ACCESS_KEY,
+        'MINIO_SECRET_KEY': settings.MINIO_SECRET_KEY,
+        'MINIO_BUCKET': settings.MINIO_BUCKET,
+    }
+
+    for var_name, var_value in required_vars.items():
+        if var_value is None or var_value == "":
+            missing_vars.append(var_name)
+
+    if missing_vars:
+        error_message = (
+            f"\n{'='*60}\n"
+            f"❌ CONFIGURATION ERROR - Analysis Service\n"
+            f"{'='*60}\n"
+            f"Missing required environment variables:\n"
+        )
+        for var in missing_vars:
+            error_message += f"  - {var}\n"
+        error_message += (
+            f"\nPlease:\n"
+            f"1. Copy .env.example to .env\n"
+            f"2. Fill in the required values\n"
+            f"3. Restart the service\n"
+            f"{'='*60}\n"
+        )
+
+        logger.error(error_message)
+        sys.exit(1)
+
+    logger.info("✅ All required environment variables are set")
+
+    # Test database connection
+    logger.info("Testing database connection...")
+    try:
+        from app.db.database import engine
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        logger.info("✅ Database connection successful")
+    except Exception as e:
+        error_message = (
+            f"\n{'='*60}\n"
+            f"❌ DATABASE CONNECTION ERROR\n"
+            f"{'='*60}\n"
+            f"Failed to connect to database.\n\n"
+            f"Error: {str(e)}\n\n"
+            f"Please check:\n"
+            f"1. DATABASE_URL is correctly set in .env\n"
+            f"2. MySQL server is running and accessible\n"
+            f"3. Network/firewall rules allow connection\n"
+            f"4. SSL certificate is valid (if using production)\n"
+            f"{'='*60}\n"
+        )
+        logger.error(error_message)
+        sys.exit(1)
+
     logger.info("Initializing database...")
     await init_db()
     logger.info("Database initialized")

@@ -4,39 +4,43 @@ Application configuration and settings
 import os
 from typing import List, Optional
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, validator
 
 
 class Settings(BaseSettings):
     """Application settings with environment variable support"""
-    
+
     # API Settings
     API_PREFIX: str = "/api"
     PROJECT_NAME: str = "AI Fintech Gateway"
     VERSION: str = "1.0.0"
     DEBUG: bool = Field(default=False, env="DEBUG")
-    
+
     # CORS Settings
     BACKEND_CORS_ORIGINS: List[str] = Field(
         default=["*"],
         env="BACKEND_CORS_ORIGINS"
     )
-    
+
     # MinIO/S3 Settings
     MINIO_ENDPOINT: str = Field(
-        default="https://j13a409.p.ssafy.io:8909",
+        ...,
+        description="MinIO/S3 endpoint URL",
         env="MINIO_ENDPOINT"
     )
     MINIO_ACCESS_KEY: str = Field(
-        default="minioadmin",
+        ...,
+        description="MinIO access key",
         env="MINIO_ACCESS_KEY"
     )
     MINIO_SECRET_KEY: str = Field(
-        default="minioadmin",
+        ...,
+        description="MinIO secret key",
         env="MINIO_SECRET_KEY"
     )
     MINIO_BUCKET: str = Field(
-        default="csv",
+        ...,
+        description="MinIO bucket name",
         env="MINIO_BUCKET"
     )
     MINIO_REGION: str = Field(
@@ -47,6 +51,24 @@ class Settings(BaseSettings):
         default=True,
         env="MINIO_SECURE"
     )
+
+    @validator('MINIO_ENDPOINT')
+    def validate_minio_endpoint(cls, v):
+        if not v:
+            raise ValueError(
+                "MINIO_ENDPOINT is required. "
+                "Please set it in .env file (e.g., minio:9000 or https://your-minio-server:9000)"
+            )
+        return v
+
+    @validator('MINIO_ACCESS_KEY')
+    def validate_minio_access_key(cls, v):
+        if not v:
+            raise ValueError(
+                "MINIO_ACCESS_KEY is required. "
+                "Please set it in .env file"
+            )
+        return v
     
     # CSV Processing Settings
     CSV_STATUS_AUTO_CLEAR: bool = Field(
