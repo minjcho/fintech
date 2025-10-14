@@ -286,11 +286,39 @@ class ProphetService:
 
             return results
 
-        except Exception as e:
-            logger.error(f"Error predicting for category '{category}': {e}")
+        except ValueError as e:
+            logger.error(f"Validation error for category '{category}': {e}")
             return {
                 'category': category,
-                'error': str(e),
+                'error': 'insufficient_data',
+                'error_detail': str(e),
+                'current_month': {'predicted': 0}
+            }
+
+        except KeyError as e:
+            logger.error(f"Missing required column for category '{category}': {e}")
+            return {
+                'category': category,
+                'error': 'missing_column',
+                'error_detail': str(e),
+                'current_month': {'predicted': 0}
+            }
+
+        except RuntimeError as e:
+            logger.exception(f"Prophet runtime error for category '{category}'")
+            return {
+                'category': category,
+                'error': 'prediction_failed',
+                'error_detail': str(e),
+                'current_month': {'predicted': 0}
+            }
+
+        except Exception as e:
+            logger.exception(f"Unexpected error for category '{category}': {type(e).__name__}")
+            return {
+                'category': category,
+                'error': 'unknown_error',
+                'error_detail': str(e),
                 'current_month': {'predicted': 0}
             }
 
@@ -347,11 +375,20 @@ class ProphetService:
                     logger.warning(f"No prediction result for category '{category}'")
                     failed_count += 1
 
-            except Exception as e:
-                logger.error(f"Exception occurred for category '{category}': {e}")
+            except ValueError as e:
+                logger.error(f"Validation error for category '{category}': {e}")
                 category_predictions[category] = {
                     'category': category,
-                    'error': str(e),
+                    'error': 'validation_error',
+                    'current_month': {'predicted': 0}
+                }
+                failed_count += 1
+
+            except Exception as e:
+                logger.exception(f"Unexpected exception for category '{category}': {type(e).__name__}")
+                category_predictions[category] = {
+                    'category': category,
+                    'error': 'processing_error',
                     'current_month': {'predicted': 0}
                 }
                 failed_count += 1
@@ -504,8 +541,23 @@ class ProphetService:
                         total_predicted += predicted_amount
                     # If no forecast, keep the zero values already set
                         
+                except ValueError as e:
+                    logger.error(f"Validation error for baseline {category} in {month_key}: {e}")
+                    # Keep the zero values already set for this category on error
+                    continue
+
+                except KeyError as e:
+                    logger.error(f"Missing column for baseline {category} in {month_key}: {e}")
+                    # Keep the zero values already set for this category on error
+                    continue
+
+                except RuntimeError as e:
+                    logger.exception(f"Prophet error for baseline {category} in {month_key}")
+                    # Keep the zero values already set for this category on error
+                    continue
+
                 except Exception as e:
-                    logger.error(f"Error calculating baseline for {category} in {month_key}: {e}")
+                    logger.exception(f"Unexpected error for baseline {category} in {month_key}: {type(e).__name__}")
                     # Keep the zero values already set for this category on error
                     continue
             

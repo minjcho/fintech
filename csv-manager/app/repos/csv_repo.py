@@ -12,7 +12,8 @@ from pathlib import Path
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError, BotoCoreError
+from fastapi import HTTPException
 
 from app.core.config import settings
 from app.models.schemas import FileInfo, Status
@@ -415,9 +416,38 @@ class S3CsvRepo(CsvRepo):
             
             return file_info
             
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+            logger.error(f"S3 upload failed for '{file_name}': {error_code}")
+            self.redis_client.set_status(file_id, "none")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Storage upload failed: {error_code}"
+            )
+
+        except NoCredentialsError:
+            logger.error(f"S3 credentials not found for '{file_name}'")
+            self.redis_client.set_status(file_id, "none")
+            raise HTTPException(
+                status_code=500,
+                detail="Storage credentials not configured"
+            )
+
+        except ValueError as e:
+            logger.error(f"Invalid file data for '{file_name}': {e}")
+            self.redis_client.set_status(file_id, "none")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file: {str(e)}"
+            )
+
         except Exception as e:
-            logger.error(f"Failed to upload file '{file_name}': {e}")
-            raise
+            logger.exception(f"Unexpected upload error for '{file_name}': {type(e).__name__}")
+            self.redis_client.set_status(file_id, "none")
+            raise HTTPException(
+                status_code=500,
+                detail="Upload failed unexpectedly"
+            )
     
     async def prepare_replace(
         self,

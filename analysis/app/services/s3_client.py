@@ -3,10 +3,12 @@ S3/MinIO client for fetching CSV files
 """
 import boto3
 from botocore.client import Config
+from botocore.exceptions import ClientError, BotoCoreError
 import pandas as pd
 import io
 import logging
 from typing import Optional
+from fastapi import HTTPException
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -42,11 +44,11 @@ class S3Client:
     async def fetch_csv_data(self, file_id: str, s3_key: str) -> Optional[pd.DataFrame]:
         """
         Fetch CSV data from S3/MinIO
-        
+
         Args:
             file_id: File identifier
             s3_key: S3 object key
-            
+
         Returns:
             DataFrame with CSV data or None
         """
@@ -56,14 +58,53 @@ class S3Client:
                 Bucket=self.bucket_name,
                 Key=s3_key
             )
-            
+
             # Read CSV data
             csv_content = response['Body'].read()
             df = pd.read_csv(io.BytesIO(csv_content))
-            
+
             logger.info(f"Fetched CSV data for file_id {file_id}: {len(df)} rows")
             return df
-            
+
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+
+            if error_code == 'NoSuchKey':
+                logger.error(f"File not found in S3: {s3_key}")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"File {file_id} not found in storage"
+                )
+            elif error_code == 'AccessDenied':
+                logger.error(f"S3 access denied: {s3_key}")
+                raise HTTPException(
+                    status_code=403,
+                    detail="Storage access denied"
+                )
+            else:
+                logger.exception(f"S3 client error ({error_code}): {s3_key}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Storage error: {error_code}"
+                )
+
+        except ValueError as e:
+            logger.error(f"Invalid CSV format for {file_id}: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid CSV file format: {str(e)}"
+            )
+
+        except pd.errors.ParserError as e:
+            logger.error(f"CSV parsing error for {file_id}: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unable to parse CSV file: {str(e)}"
+            )
+
         except Exception as e:
-            logger.error(f"Failed to fetch CSV from S3: {e}")
-            return None
+            logger.exception(f"Unexpected S3 error for {file_id}: {type(e).__name__}")
+            raise HTTPException(
+                status_code=500,
+                detail="Unexpected storage error"
+            )
